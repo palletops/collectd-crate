@@ -8,85 +8,85 @@
    [pallet.crate.automated-admin-user :only [automated-admin-user]]
    [pallet.live-test :only [images test-nodes]]))
 
-(deftest config-block-test
-  (is (= '[:pallet.crate.collectd/config-block Plugin powerdns
-           [:pallet.crate.collectd/config-block Server "s"
-            [:pallet.crate.collectd/config Collect "l"]]
-           [:pallet.crate.collectd/config-block Recursor "r_n"
-            [:pallet.crate.collectd/config Collect "qs"]
-            [:pallet.crate.collectd/config Collect ["ch" "cm"]]]
-           [:pallet.crate.collectd/config LocalSocket "/ls"]]
-         (eval (config-block
-                '(Plugin powerdns
-                         (Server "s"
-                                 Collect "l")
-                         (Recursor "r_n"
-                                   Collect "qs"
-                                   Collect ["ch" "cm"])
-                         LocalSocket "/ls"))))))
-
-(deftest collectd-plugin-config-test
-  (is (= '[:pallet.crate.collectd/config-block
-           Plugin s [:pallet.crate.collectd/config-block Collect "l"]]
-         (collectd-plugin-config s (Collect "l")))))
-
 (deftest collectd-config-test
-  (is (= '[:pallet.crate.collectd/config-block
-           pallet.crate.collectd/implicit nil
-           [:pallet.crate.collectd/config PIDFile "/pid"]]
-         (collectd-config PIDFile "/pid")))
-  (is (= '[:pallet.crate.collectd/config-block
-           pallet.crate.collectd/implicit nil
-           [:pallet.crate.collectd/config PIDFile (script "/pid")]]
-         (collectd-config PIDFile '(script "/pid"))))
-  (is (= '[:pallet.crate.collectd/config-block
-           pallet.crate.collectd/implicit nil
-           [:pallet.crate.collectd/config-block Plugin powerdns
-            [:pallet.crate.collectd/config-block Server "s"
-             [:pallet.crate.collectd/config Collect "l"]]
-            [:pallet.crate.collectd/config-block Recursor "r_n"
-             [:pallet.crate.collectd/config Collect "qs"]
-             [:pallet.crate.collectd/config Collect ["ch" "cm"]]]
-            [:pallet.crate.collectd/config LocalSocket "/ls"]]]
+  (is (= '[[PIDFile "/pid"]
+           [Plugin syslog [[LogLevel info]]]
+           [Plugin cpu []]]
          (collectd-config
-          (Plugin powerdns
-                  (Server "s"
-                          Collect "l")
-                  (Recursor "r_n"
-                            Collect "qs"
-                            Collect ["ch" "cm"])
-                  LocalSocket "/ls")))))
+          [PIDFile "/pid"]
+          (Plugin syslog
+                  [[LogLevel info]])
+          (Plugin cpu [])))))
 
-(deftest format-scoped-blocks-test
-  (is (= "\"a\"" (format-scoped-blocks "a")))
-  (is (= "\"a\" \"b\" \"c\"" (format-scoped-blocks ["a" "b" "c"])))
-  (is (= "Collect \"a\""
-         (format-scoped-blocks
-          [:pallet.crate.collectd/config 'Collect "a"])))
-  (is (= "Collect \"a\" \"b\""
-         (format-scoped-blocks
-          [:pallet.crate.collectd/config 'Collect ["a" "b"]]))))
+(deftest add-load-plugin-test
+  (is (= '[[LoadPlugin x] [Plugin x []]] (add-load-plugin '[[Plugin x []]]))))
+
+(deftest format-element-test
+  (testing "non-blocks"
+    (is (= "Collect \"a\" \"b\" \"c\"\n"
+           (format-element 0 ['Collect "a" "b" "c"])))
+    (is (= "Collect \"a\"\n" (format-element 0 ['Collect "a"])))
+    (is (= "    Collect \"a\"\n" (format-element 2 '[Collect "a"])))
+    (is (= "Collect \"a\" \"b\"\n" (format-element 0 '[Collect "a" "b"]))))
+  (testing "blocks"
+    (is (nil? (format-element 0 ['Server []])))
+    (is (nil? (format-element 0 ['Server "a" []])))
+    (is (= "    <Server>\n      Collect \"a\"\n    </Server>\n"
+           (format-element 2 '[Server [[Collect "a"]]])))
+    (is (= "<Server \"s\">\n  Collect \"a\" \"b\"\n</Server>\n"
+           (format-element 0 '[Server "s" [[Collect "a" "b"]]])))))
 
 (deftest format-config-test
-  (is (= "PIDFile \"/pid\"\n\n"
-         (format-config (collectd-config PIDFile "/pid"))))
-  (is (= "PIDFile \"/pid\"\nLoadPlugin syslog\nLoadPlugin cpu\n<Plugin syslog>\nLogLevel info\n</Plugin>\n\n"
+  (is (= "PIDFile \"/pid\"\n"
+         (format-config '[[PIDFile "/pid"]])))
+  (is (= (str "PIDFile \"/pid\"\n"
+              "LoadPlugin syslog\n"
+              "LoadPlugin cpu\n"
+              "<Plugin \"syslog\">\n"
+              "  LogLevel info\n"
+              "</Plugin>\n")
          (format-config
-          (collectd-config
-           PIDFile "/pid"
-           (Plugin syslog
-                   LogLevel 'info)
-           (Plugin cpu)))))
-  (is (= "PIDFile \"/pid\"\nLoadPlugin syslog\nLoadPlugin cpu\nLoadPlugin memory\n<Plugin syslog>\nLogLevel info\n</Plugin>\n\n\n"
+          (add-load-plugin
+           '[[PIDFile "/pid"]
+             [Plugin syslog [[LogLevel info]]]
+             (Plugin cpu [])]))))
+  (is (= (str
+          "PIDFile \"/pid\"\n"
+          "LoadPlugin syslog\n"
+          "LoadPlugin cpu\n"
+          "LoadPlugin memory\n"
+          "<Plugin \"syslog\">\n"
+          "  LogLevel info\n"
+          "</Plugin>\n")
          (format-config
-          (conj
-           (collectd-config
-            PIDFile "/pid"
-            (Plugin syslog
-                    LogLevel 'info)
-            (Plugin cpu))
-           (collectd-plugin-config
-            memory))))))
+          (add-load-plugin
+           (concat
+            (collectd-config
+             [PIDFile "/pid"]
+             (Plugin syslog
+                     [[LogLevel info]])
+             (Plugin cpu []))
+            (collectd-config
+             (Plugin memory []))))))))
+
+(deftest plugin-config-test
+  (is (= [[:MBean "pfx-gc"
+           [:ObjectName "java.lang:type=GarbageCollector,prefix=*"]
+           [:InstancePrefix "pfx.gc."]
+           [[:Type "gauge"] [:Attribute "CollectionTime"]]]]
+         (jmx-mbeans "pfx" [:gc])))
+  (is (= [:Plugin :GenericJMX
+          [:MBean "pfx-gc"
+           [:ObjectName "java.lang:type=GarbageCollector,prefix=*"]
+           [:InstancePrefix "pfx.gc."]
+           [[:Type "gauge"] [:Attribute "CollectionTime"]]]
+          [:Connection
+           [[:Host "host"] [:ServiceURL "http://somewhere"]
+            [:Collect "pfx-gc"]]]]
+         (plugin-config
+          :generic-jmx
+          {:url "http://somewhere" :host "host"
+           :mbeans (jmx-mbeans "pfx" [:gc])}))))
 
 (deftest ^:live-test live-test
   (let [settings {:install-strategy :collectd5-ppa}]

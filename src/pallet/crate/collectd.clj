@@ -4,13 +4,14 @@
 (ns pallet.crate.collectd
   "A pallet crate to install and configure collectd"
   (:use
-   [clojure.string :only [join]]
-   [clojure.algo.monads :only [m-when]]
+   [clojure.algo.monads :only [m-map m-when]]
+   [clojure.string :only [join split]]
+   [clojure.tools.logging :only [debugf]]
    [pallet.action :only [with-action-options]]
    [pallet.actions
     :only [directory exec-checked-script exec-script packages
            remote-directory remote-file service symbolic-link user group
-           assoc-settings]
+           assoc-settings update-settings service-script]
     :rename {user user-action group group-action
              assoc-settings assoc-settings-action
              service service-action}]
@@ -29,35 +30,6 @@
 (def ^{:doc "Flag for recognising changes to configuration"}
   collectd-config-changed-flag "collectd-config")
 
-;;; # Configuration DSL
-(defn config-block
-  [[block-name & values]]
-  (let [filter-fn (fn [form] (and (list? form)
-                                  (<= (int \A)
-                                      ((comp int first name first) form)
-                                      (int \Z))))
-        forms (filter filter-fn values)
-        kw-vals (remove filter-fn values)
-        [kw-vals n] (if (even? (count kw-vals))
-                      [kw-vals nil]
-                      [(rest kw-vals) (first kw-vals)])]
-    `(vec (concat
-           [::config-block '~block-name '~n]
-           ~(vec (map config-block forms))
-           ~(vec (map
-                  #(vector ::config (list 'quote (first %)) (second %))
-                  (partition 2 kw-vals)))))))
-
-(defmacro collectd-config
-  "Define a scope for generating plugin config blocks"
-  [& body]
-  (config-block `(implicit ~@body)))
-
-(defmacro collectd-plugin-config
-  "Define a scope for generating plugin config blocks"
-  [plugin-name & body]
-  (config-block `(~'Plugin ~plugin-name ~@body)))
-
 ;;; # Settings
 (defn default-settings []
   {:version "5.1.0"
@@ -65,11 +37,13 @@
    :user "collectd"
    :owner "collectd"
    :group "collectd"
-   :src-dir "/usr/local/collectd"
-   :config-dir "/etc/collectd"
+   :src-dir "/opt/collectd"
+   :prefix "/usr/local"
+   :config-dir "/etc"
    :plugin-dir "/var/lib/collectd"
-   :config (collectd-config
-            PIDFile (script (str (~pid-root) "/collectd.pid")))
+   :log-dir "/var/log"
+   :config [;; [:PIDFile (script (str (~pid-root) "/collectd.pid"))]
+            ]
    :service "collectd"})
 
 (defn source-url [{:keys [version dist-url]}]
@@ -119,27 +93,82 @@
     :as settings}]
   [settings (m-result
              (update-in (merge (default-settings) (dissoc settings :config))
-                        [:config] (comp vec concat)
-                        (drop 3 (:config settings))))
+                        [:config] concat (:config settings)))
    settings (settings-map (:version settings) settings)]
   (assoc-settings :collectd settings {:instance-id instance-id}))
 
+(def-plan-fn collectd-add-config
+  "Add configuration for collectd. The given `config` is concatenated onto the
+   collectd configuration. This can be used to allow other crates to contribute
+   to the collectd configuration."
+  [config & {:keys [instance-id] :as options}]
+  (update-settings :collectd {:instance-id instance-id}
+                   update-in [:config] concat config))
+
+(def-plan-fn collectd-add-plugin-config
+  "Add configuration for a collectd `plugin`. The `plugin` has to be a valid
+   dispatch value for `plugin-config`.  The given `config` is concatenated onto
+   the collectd plugin configuration. This can be used to allow other crates to
+   contribute to a collectd plugin configuration."
+  [plugin config & {:keys [instance-id] :as options}]
+  (update-settings :collectd {:instance-id instance-id}
+                   update-in [:plugins plugin] concat config))
+
 ;;; # Install
+(defmulti collectd-feature
+  "Provide compile time information for enabling collectd features.
+   Each feature should return a map with :packages and :configure keys.
+   :packages should list the required system packages, and :configure
+   should return a string to pass to the configure script.
+   This is a multimethod so that it can be extended externally."
+  (fn [feature] feature))
+
+(def-plan-fn link-libjvm-so
+  [{:keys [prefix] :as settings}]
+  (symbolic-link
+   (script (str @JAVA_HOME "/jre/lib/amd64/server/libjvm.so"))
+   "/usr/local/lib/libjvm.so")
+  (exec-checked-script
+   "ldconfig for libjvm"
+   ("ldconfig")))
+
+(defmethod collectd-feature :java
+  [_]
+  {:configure "--with-java=yes"
+   :configure-env (array-map
+                   :JAVA_CPPFLAGS "-I$JAVA_HOME/include"
+                   :JAVA_LDFLAGS "-L$JAVA_HOME/jre/lib/amd64/server"
+                   ;; :JAVA_HOME ""
+                   )       ; to prevent rpath in resulting java.so
+   :install link-libjvm-so})
+
 (defmethod-plan install ::source
   [facility instance-id]
-  [{:keys [owner group src-dir home url] :as settings}
-   (get-settings facility {:instance-id instance-id})]
+  [{:keys [owner group src-dir prefix url features pkgs] :as settings}
+   (get-settings facility {:instance-id instance-id})
+   pkgs (m-result
+         (concat pkgs
+                 (mapcat (comp :packages collectd-feature) features)))
+   config (m-result
+           (join " "
+                 (map (comp :configure collectd-feature) features)))]
+  (m-map
+   #(% settings)
+   (filter identity (map (comp :install collectd-feature) features)))
   (packages
-   :centos ["gcc" "make"]
-   :apt ["build-essential" "libsensors-dev" "libsnmp-dev"]
-   :aptitude ["build-essential"])
+   :centos (concat pkgs ["gcc" "make"])
+   :apt (concat pkgs ["build-essential" "libsensors-dev" "libsnmp-dev"])
+   :aptitude (concat pkgs ["build-essential"]))
   (apply pallet.actions/remote-directory src-dir
          (apply concat (merge {:owner owner :group group}
                               (:remote-directory settings))))
   (with-action-options {:script-dir src-dir :sudo-user owner}
     (exec-checked-script
      "Build collectd"
-     ("./configure" "--prefix" ~home)
+     (~(join " " (map
+                  (fn [[k v]] (str (name k) "=\"" v \"))
+                  (mapcat (comp :configure-env collectd-feature) features)))
+      "./configure" "--prefix" ~prefix ~config)
      ("make all")))
   (with-action-options {:script-dir src-dir}
     (exec-checked-script
@@ -156,80 +185,158 @@
 (def-plan-fn collectd-user
   "Create the collectd user"
   [{:keys [instance-id] :as options}]
-  [{:keys [user owner group home]} (get-settings :collectd options)]
+  [{:keys [user owner group]} (get-settings :collectd options)]
   (group-action group :system true)
   (m-when (not= owner user) (user-action owner :group group :system true))
   (user-action user :group group :system true :create-home true :shell :bash))
 
 ;;; # Configuration
+
+;;; Directives are configured with a sequence of nested sequences.  The nested
+;;; sequences representing attributes are sequences of a name followed by
+;;; scalars.  Blocks are represented as sequences containing a final sequence
+;;; value.
+
+(defmacro collectd-config
+  "Returns a collectd configuration literal. Note that values are not escaped
+   here, so this can only be used for literal content."
+  [& args]
+  `'[~@args])
+
+(defmulti format-value type)
+
+(defmethod format-value :default
+  [v] (pr-str v))
+
+(defmethod format-value clojure.lang.Named
+  [v] (name v))
+
+(defn config-block
+  [[_ & [n v]]]
+  (or (and (sequential? v) v)
+      (and (sequential? n) n)
+      nil))
+
+(defn format-element
+  [offset [element-name & [n v :as values] :as stmt]]
+  (let [element-name (format-value element-name)
+        block (config-block stmt)
+        n (if (and block (sequential? n)) nil n)
+        prefix (apply str (repeat offset "  "))]
+    (debugf "format-element %s %s %s" element-name n (doall block))
+    (if block
+      (when (seq block)
+        (debugf "format-element block %s" (ffirst block))
+        ;; (assert
+        ;;  (every? vector? block)
+        ;;  "A collectd block must be composed of a vector of vector elements")
+        (str
+         prefix "<" element-name (if n (str " " (pr-str (name n))) "") ">\n"
+         (join (map (partial format-element (inc offset)) block))
+         prefix "</" element-name ">\n"))
+      (str prefix element-name " "
+           (join " " (map format-value values)) \newline))))
+
+(defn format-config
+  [config]
+  (debugf "collectd/format-config %s" (vec config))
+  (join (map (partial format-element 0) config)))
+
+(defn add-load-plugin
+  "Looks for Plugin configuration blocks, and adds LoadPlugin blocks for them."
+  [config]
+  (let [[globals other] (partition-by
+                         (comp boolean config-block)
+                         (concat [[]] config))]
+    (debugf
+     "add-load-plugin %s %s %s"
+     (vec config) (doall globals) (doall other))
+    (concat
+     (filter seq globals)
+     (->> config
+          (filter #(= "Plugin" (name (first %))))
+          (map second)
+          (map #(vector 'LoadPlugin %))
+          (distinct))
+     ;; convert plugin names to be unqualified (LoadPlugin requires qualified
+     ;; names)
+     (map
+      (fn [x]
+        (if (and (sequential? x) (= "Plugin" (name (first x))))
+          (update-in x [1] #(last (split (name %) #"\.")))
+          x))
+      other))))
+
+
 (def-plan-fn config-file
   "Helper to write config files"
-  [{:keys [owner group config-dir] :as settings} filename file-source]
+  [filename file-source options]
+  [{:keys [owner group config-dir]} (get-settings :collectd options)]
   (apply
    remote-file (str config-dir "/" filename)
    :flag-on-changed collectd-config-changed-flag
    :owner owner :group group
    (apply concat file-source)))
 
-(defmulti format-scoped-blocks
-  (fn [config] (if (vector? config)
-                 (or
-                  (and (= ::config-block (first config))
-                       (= `implicit (second config))
-                       ::top-level)
-                  (#{::config-block ::config} (first config))
-                  ::vector)
-                 (type config))))
+(defn plugin-config-from-settings
+  "Calculates a plugin's config from the :plugins in the :collectd settings."
+  [plugins]
+  (debugf "plugin-config-from-settings %s" (vec plugins))
+  (reduce
+   (fn [config [plugin plugin-config]]
+     (conj config `[:Plugin ~plugin ~(add-load-plugin plugin-config)]))
+   []
+   plugins))
 
-(defmethod format-scoped-blocks :default
-  [config]
-  (pr-str config))
-
-(defmethod format-scoped-blocks ::top-level
-  [[_ block-type n & values]]
-  (str
-   (join \newline
-         (map format-scoped-blocks (filter #(= ::config (first %)) values)))
-   \newline
-   (join \newline
-         (->> values
-              (filter
-               #(and (= ::config-block (first %)) (= 'Plugin (second %))))
-              (map #(vector ::config 'LoadPlugin (nth % 2)))
-              (map format-scoped-blocks)))
-   \newline
-   (join \newline
-         (map format-scoped-blocks (remove #(= ::config (first %)) values)))))
-
-(defmethod format-scoped-blocks ::config-block
-  [[_ block-type n & values]]
-  (when (seq values)
-    (str
-     "<" block-type (if n (str " " n) "") ">\n"
-     (join \newline (map format-scoped-blocks values))
-     \newline
-     "</" block-type ">\n")))
-
-(defmethod format-scoped-blocks ::config
-  [[_ n values]]
-  (str n " " (format-scoped-blocks values)))
-
-(defmethod format-scoped-blocks ::vector
-  [values]
-  (join " " (map format-scoped-blocks values)))
-
-(defn format-config
-  [config]
-  (format-scoped-blocks config))
+(def-plan-fn collectd-config-from-settings
+  "Calculate the contents of the collectd conf file from the settings"
+  [{:keys [instance-id] :as options}]
+  [{:keys [config plugins] :as settings} (get-settings :collectd options)]
+  (m-result (add-load-plugin
+             (concat config (plugin-config-from-settings plugins)))))
 
 (def-plan-fn collectd-conf
-  "Helper to write the collectd conf file"
+  "Write the collectd conf file"
   [{:keys [instance-id] :as options}]
-  [{:keys [config] :as settings} (get-settings :collectd options)]
+  [config (collectd-config-from-settings options)]
   (config-file
-   settings "collectd.conf" {:content (format-config config) :literal true}))
+   "collectd.conf" {:content (format-config config) :literal true}
+   options))
 
-(def-plan-fn collectd-init-service
+(defmulti collectd-service-script-content
+  (fn [{:keys [service-impl] :as settings}] (or service-impl :upstart)))
+
+(defmethod collectd-service-script-content :upstart
+  [{:keys [config-dir prefix] :or {prefix "/usr"} :as settings}]
+  {:content (str
+             "start on runlevel [2345]
+stop on runlevel [S016]
+respawn
+expect fork
+respawn limit 10 5
+pre-start exec " prefix "/sbin/collectd -t -C " config-dir "/collectd.conf
+exec " prefix "/sbin/collectd -C " config-dir "/collectd.conf")
+   :literal true})
+
+(def-plan-fn collectd-service-script
+  "Install the collectd service script.
+
+   Specify `:if-config-changed true` to make actions conditional on a change in
+   configuration.
+
+   Other options are as for `pallet.action.service/service`. The service
+   name is looked up in the request parameters."
+  [{:keys [action if-config-changed if-flag instance-id] :as options}]
+  [{:keys [service service-impl] :as settings}
+   (get-settings :collectd {:instance-id instance-id})]
+  (apply-map
+   service-script service
+   (merge {:service-impl (or service-impl :upstart)}
+          (collectd-service-script-content settings)
+          options)))
+
+
+(def-plan-fn collectd-service
   "Control the collectd service.
 
    Specify `:if-config-changed true` to make actions conditional on a change in
@@ -238,10 +345,13 @@
    Other options are as for `pallet.action.service/service`. The service
    name is looked up in the request parameters."
   [{:keys [action if-config-changed if-flag instance-id] :as options}]
-  [{:keys [service]} (get-settings :collectd {:instance-id instance-id})
-   options (m-result (if if-config-changed
-                       (assoc options :if-flag collectd-config-changed-flag)
-                       options))]
+  [{:keys [service service-impl] :or {service-impl :upstart}}
+   (get-settings :collectd {:instance-id instance-id})
+   options (m-result
+            (merge {:service-impl service-impl}
+                   (if if-config-changed
+                     (assoc options :if-flag collectd-config-changed-flag)
+                     options)))]
   (apply-map service-action service options))
 
 (defn collectd
@@ -254,3 +364,137 @@
               (collectd-user opts)
               (install-collectd :instance-id instance-id))
     :configure (plan-fn (collectd-conf opts))}))
+
+;;; # Configuration generating functions
+
+;;; ## Plugin configuration
+(defmulti collectd-plugin-config (fn [plugin options] plugin))
+
+(defmethod collectd-plugin-config :logfile
+  [_ {:keys [log-level log-dir] :or {log-level 'info}}]
+  [:Plugin :logfile
+   [[:LogLevel log-level]
+    [:File (str log-dir "/collectd.log")]]])
+
+(defmethod collectd-plugin-config :write_graphite
+  [_ {:keys [host port prefix] :or {port 2003 prefix "collectd."}}]
+  (assert host "Must specify a host for write_graphite configuration")
+  [:Plugin :write_graphite
+   [[:Carbon [[:Host host] [:Port port] [:Prefix prefix]]]]])
+
+(defmethod collectd-plugin-config :java
+  [_ {:keys [jvm-args plugins]}]
+  `[:Plugin :java
+   ~@(map #(vector :JVMArg %) jvm-args)
+   ~@plugins])
+
+(defmethod collectd-plugin-config :generic-jmx
+  [_ {:keys [mbeans connections]}]
+  `[:Plugin "org.collectd.java.GenericJMX"
+    [~@mbeans
+     ~@connections]])
+
+(defmethod collectd-plugin-config :generic-jmx-connection
+  [_ {:keys [url host prefix mbeans]}]
+  `[[:Connection
+     [~@(when host [[:Host host]])
+      [:ServiceURL ~url]
+      ~@(when prefix [[:InstancePrefix prefix]])
+      ~@(map #(vector :Collect (second %)) mbeans)]]])
+
+;;; ## JMX configuration
+(defn mbean-value
+  [attribute type & {:keys [prefix]}]
+  `[:Value
+    [[:Type ~type]
+     [:Attribute ~attribute]
+     ~@(when prefix [[:InstancePrefix prefix]])]])
+
+(defn mbean-table
+  [attribute type & {:keys [prefix]}]
+  `[:Value
+    [[:Type ~type]
+     [:Table true]
+     [:Attribute ~attribute]
+     ~@(when prefix [[:InstancePrefix prefix]])]])
+
+(defn mbean [stat-name object-name {:keys [prefix from]} & values]
+  `[:MBean ~stat-name
+    [[:ObjectName ~object-name]
+     ~@(when prefix [[:InstancePrefix prefix]])
+     ~@values]])
+
+(defn jmx-mbeans
+  "Return the collectd spec for specified beans, named with a given `prefix`.
+   Known bean components are :os, :memory, :memory-pool, :gc, :runtime,
+   :threading, :compilation and :class-loading."
+
+  [prefix components]
+  (map
+   {:os
+    (mbean
+     (str prefix "-os") "java.lang:type=OperatingSystem"
+     {:prefix (str prefix ".os")}
+     (mbean-value "OpenFileDescriptorCount" "gauge" :prefix "filedes.open")
+     (mbean-value "MaxFileDescriptorCount" "gauge" :prefix "filedes.max")
+     (mbean-value "CommittedVirtualMemorySize" "memory" :prefix "memcommit")
+     (mbean-value "FreePhysicalMemorySize" "memory" :prefix "memphy.free")
+     (mbean-value "TotalPhysicalMemorySize" "memory" :prefix "memphy.total")
+     (mbean-value "FreeSwapSpaceSize" "memory" :prefix "swap.free")
+     (mbean-value "TotalSwapSpaceSize" "memory" :prefix "swap.total")
+     (mbean-value "ProcessCpuTime" "gauge" :prefix "cpu.time")
+     (mbean-value "SystemLoadAverage" "gauge" :prefix "loadavg"))
+
+    :memory
+    (mbean
+     (str prefix "-memory") "java.lang:type=Memory"
+     {:prefix (str prefix ".memory")}
+     (mbean-table "HeapMemoryUsage" "memory")
+     (mbean-table "NonHeapMemoryUsage" "memory")
+     (mbean-value "ObjectPendingFinalizationCount" "gauge"
+                  :prefix "pending"))
+
+    :memory-pool
+    (mbean
+     (str prefix "-mempool") "java.lang:type=MemoryPool,name=*"
+     {:prefix (str prefix ".mempool") :from "prefix"}
+     (mbean-table "Usage" "memory" :prefix "usage")
+     (mbean-table "PeakUsage" "memory" :prefix "peakusage"))
+
+    :gc
+    (mbean
+     (str prefix "-gc") "java.lang:type=GarbageCollector,name=*"
+     {:prefix (str prefix ".gc") :from "prefix"}
+     (mbean-value "CollectionTime" "gauge"))
+
+    :threading
+    (mbean
+     (str prefix "-threading") "java.lang:type=Threading"
+     {:prefix (str prefix ".threading")}
+     (mbean-value "ThreadCount" "gauge" :prefix "threads.count")
+     (mbean-value "DaemonThreadCount" "gauge" :prefix "threads.daemon")
+     (mbean-value "TotalStartedThreadCount" "gauge" :prefix "threads.total")
+     (mbean-value "CurrentThreadCpuTime" "derive" :prefix "cpu")
+     (mbean-value "CurrentThreadUserTime" "derive" :prefix "user"))
+
+    :runtime
+    (mbean
+     (str prefix "-runtime") "java.lang:type=Runtime"
+     {:prefix (str prefix ".runtime")}
+     (mbean-value "StartTime" "gauge" :prefix "starttime")
+     (mbean-value "Uptime" "gauge" :prefix "uptime"))
+
+    :compilation
+    (mbean
+     (str prefix "-compilation") "java.lang:type=Compilation"
+     {:prefix (str prefix ".compilation")}
+     (mbean-value "TotalCompilationTime" "gauge" :prefix "time"))
+
+    :class-loading
+    (mbean
+     (str prefix "-classloading") "java.lang:type=ClassLoading"
+     {:prefix (str prefix ".classes")}
+     (mbean-value "LoadedClassCount" "gauge" :prefix "loaded")
+     (mbean-value "UnloadedClassCount" "gauge" :prefix "unloaded")
+     (mbean-value "TotalLoadedClassCount" "gauge" :prefix "total"))}
+   components))
