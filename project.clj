@@ -1,4 +1,4 @@
-(defproject com.palletops/collectd-crate "0.1.0"
+(defproject com.palletops/collectd-crate "0.1.1-SNAPSHOT"
   :description "Crate for collectd installation"
   :url "http://github.com/palletops/collectd-crate"
   :license {:name "All rights reserved"}
