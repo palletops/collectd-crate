@@ -19,7 +19,7 @@
           (Plugin cpu [])))))
 
 (deftest add-load-plugin-test
-  (is (= '[[LoadPlugin x] [Plugin x []]] (add-load-plugin '[[Plugin x []]]))))
+  (is (= '[[LoadPlugin x] [Plugin "x" []]] (add-load-plugin '[[Plugin x []]]))))
 
 (deftest format-element-test
   (testing "non-blocks"
@@ -40,21 +40,21 @@
   (is (= "PIDFile \"/pid\"\n"
          (format-config '[[PIDFile "/pid"]])))
   (is (= (str "PIDFile \"/pid\"\n"
-              "LoadPlugin syslog\n"
-              "LoadPlugin cpu\n"
+              "LoadPlugin \"syslog\"\n"
+              "LoadPlugin \"cpu\"\n"
               "<Plugin \"syslog\">\n"
               "  LogLevel info\n"
               "</Plugin>\n")
          (format-config
           (add-load-plugin
            '[[PIDFile "/pid"]
-             [Plugin syslog [[LogLevel info]]]
-             (Plugin cpu [])]))))
+             [Plugin "syslog" [[LogLevel info]]]
+             [Plugin "cpu" []]]))))
   (is (= (str
           "PIDFile \"/pid\"\n"
-          "LoadPlugin syslog\n"
-          "LoadPlugin cpu\n"
-          "LoadPlugin memory\n"
+          "LoadPlugin \"syslog\"\n"
+          "LoadPlugin \"cpu\"\n"
+          "LoadPlugin \"memory\"\n"
           "<Plugin \"syslog\">\n"
           "  LogLevel info\n"
           "</Plugin>\n")
@@ -63,30 +63,30 @@
            (concat
             (collectd-config
              [PIDFile "/pid"]
-             (Plugin syslog
-                     [[LogLevel info]])
-             (Plugin cpu []))
+             [Plugin "syslog" [[LogLevel info]]]
+             [Plugin "cpu" []])
             (collectd-config
-             (Plugin memory []))))))))
+             [Plugin "memory" []])))))))
 
 (deftest plugin-config-test
   (is (= [[:MBean "pfx-gc"
-           [:ObjectName "java.lang:type=GarbageCollector,prefix=*"]
-           [:InstancePrefix "pfx.gc."]
-           [[:Type "gauge"] [:Attribute "CollectionTime"]]]]
+           [[:ObjectName "java.lang:type=GarbageCollector,name=*"]
+            [:InstancePrefix "pfx.gc"]
+            [:Value [[:Type "gauge"] [:Attribute "CollectionTime"]]]]]]
          (jmx-mbeans "pfx" [:gc])))
-  (is (= [:Plugin :GenericJMX
-          [:MBean "pfx-gc"
-           [:ObjectName "java.lang:type=GarbageCollector,prefix=*"]
-           [:InstancePrefix "pfx.gc."]
-           [[:Type "gauge"] [:Attribute "CollectionTime"]]]
-          [:Connection
-           [[:Host "host"] [:ServiceURL "http://somewhere"]
-            [:Collect "pfx-gc"]]]]
-         (plugin-config
+  (is (= [:Plugin "org.collectd.java.GenericJMX"
+          [[:MBean "pfx-gc"
+            [[:ObjectName "java.lang:type=GarbageCollector,name=*"]
+             [:InstancePrefix "pfx.gc"]
+             [:Value [[:Type "gauge"] [:Attribute "CollectionTime"]]]]]
+           [[:Connection
+             [[:Host "host"] [:ServiceURL "http://somewhere"]]]]]]
+         (collectd-plugin-config
           :generic-jmx
-          {:url "http://somewhere" :host "host"
-           :mbeans (jmx-mbeans "pfx" [:gc])}))))
+          {:mbeans (jmx-mbeans "pfx" [:gc])
+           :connections [(collectd-plugin-config
+                          :generic-jmx-connection
+                          {:url "http://somewhere" :host "host"})]}))))
 
 (deftest ^:live-test live-test
   (let [settings {:install-strategy :collectd5-ppa}]
