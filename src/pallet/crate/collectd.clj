@@ -4,7 +4,7 @@
 (ns pallet.crate.collectd
   "A pallet crate to install and configure collectd"
   (:use
-   [clojure.algo.monads :only [m-map m-when]]
+   [pallet.monad.state-monad :only [m-map m-when]]
    [clojure.string :only [join split]]
    [clojure.tools.logging :only [debugf]]
    [pallet.action :only [with-action-options]]
