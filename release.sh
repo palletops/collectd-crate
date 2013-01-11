@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# release collectd
+# release graphite
 
 if [[ $# -lt 3 ]]; then
   echo "usage: $(basename $0) previous-version new-version next-version" >&2

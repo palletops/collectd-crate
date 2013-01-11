@@ -3,9 +3,9 @@
   :url "http://github.com/palletops/collectd-crate"
   :license {:name "All rights reserved"}
   :dependencies [[org.clojure/clojure "1.4.0"]
-                 [org.cloudhoist/pallet "0.8.0-alpha.6"]]
+                 [org.cloudhoist/pallet "0.8.0-SNAPSHOT"]]
   :profiles {:dev
-             {:dependencies [[org.cloudhoist/pallet "0.8.0-alpha.6"
+             {:dependencies [[org.cloudhoist/pallet "0.8.0-SNAPSHOT"
                               :classifier "tests"]
                              [ch.qos.logback/logback-classic "1.0.0"]]}}
   :test-selectors {:default (complement :live-test)
