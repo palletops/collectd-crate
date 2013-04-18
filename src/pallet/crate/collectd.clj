@@ -3,27 +3,28 @@
 
 (ns pallet.crate.collectd
   "A pallet crate to install and configure collectd"
-  (:use
-   [clojure.string :only [join split]]
-   [clojure.tools.logging :only [debugf]]
-   [pallet.action :only [with-action-options]]
+  (:require
+   [clojure.string :refer [join split]]
+   [clojure.tools.logging :refer [debugf]]
+   [pallet.action :refer [with-action-options]]
    [pallet.actions
-    :only [directory exec-checked-script exec-script packages
+    :refer [directory exec-checked-script exec-script packages
            remote-directory remote-file service symbolic-link user group
            assoc-settings update-settings service-script]
     :rename {user user-action group group-action
              assoc-settings assoc-settings-action
-             service service-action}]
-   [pallet.api :only [plan-fn server-spec]]
+             service service-action
+             service-script service-script-action}]
+   [pallet.api :refer [plan-fn] :as api]
    [pallet.crate
-    :only [defplan assoc-settings defmethod-plan get-settings
+    :refer [defplan assoc-settings defmethod-plan get-settings
            get-node-settings group-name nodes-with-role target-id]]
-   [pallet.crate-install :only [install]]
-   [pallet.script.lib :only [pid-root log-root config-root user-home]]
-   [pallet.stevedore :only [script]]
-   [pallet.utils :only [apply-map]]
+   [pallet.crate-install :as crate-install]
+   [pallet.script.lib :refer [pid-root log-root config-root user-home]]
+   [pallet.stevedore :refer [script]]
+   [pallet.utils :refer [apply-map]]
    [pallet.version-dispatch
-    :only [defmulti-version-plan defmethod-version-plan]]))
+    :refer [defmulti-version-plan defmethod-version-plan]]))
 
 
 (def ^{:doc "Flag for recognising changes to configuration"}
@@ -84,7 +85,7 @@
              :install-strategy :packages
              :packages ["collectd"]))))
 
-(defplan collectd-settings
+(defplan settings
   "Settings for collectd"
   [{:keys [user owner group dist-url version config install-strategy
            instance-id]
@@ -139,7 +140,7 @@
                    )       ; to prevent rpath in resulting java.so
    :install link-libjvm-so})
 
-(defmethod-plan install ::source
+(defmethod-plan crate-install/install ::source
   [facility instance-id]
   (let [{:keys [owner group src-dir prefix url features pkgs] :as settings}
         (get-settings facility {:instance-id instance-id})
@@ -169,14 +170,14 @@
        "Install collectd"
        ("make install")))))
 
-(defplan install-collectd
+(defplan install
   "Install collectd."
-  [& {:keys [instance-id]}]
+  [{:keys [instance-id]}]
   (let [settings (get-settings :collectd {:instance-id instance-id})]
-     (install :collectd instance-id)))
+    (crate-install/install :collectd instance-id)))
 
 ;;; # User
-(defplan collectd-user
+(defplan user
   "Create the collectd user"
   [{:keys [instance-id] :as options}]
   (let [{:keys [user owner group]} (get-settings :collectd options)]
@@ -290,7 +291,7 @@
   (let [{:keys [config plugins] :as settings} (get-settings :collectd options)]
     (add-load-plugin (concat config (plugin-config-from-settings plugins)))))
 
-(defplan collectd-conf
+(defplan configure
   "Write the collectd conf file"
   [{:keys [instance-id] :as options}]
   (let [config (collectd-config-from-settings options)]
@@ -313,7 +314,7 @@ pre-start exec " prefix "/sbin/collectd -t -C " config-dir "/collectd.conf
 exec " prefix "/sbin/collectd -C " config-dir "/collectd.conf")
    :literal true})
 
-(defplan collectd-service-script
+(defplan service-script
   "Install the collectd service script.
 
    Specify `:if-config-changed true` to make actions conditional on a change in
@@ -330,7 +331,7 @@ exec " prefix "/sbin/collectd -C " config-dir "/collectd.conf")
             (collectd-service-script-content settings)
             options))))
 
-(defplan collectd-service
+(defplan service
   "Control the collectd service.
 
    Specify `:if-config-changed true` to make actions conditional on a change in
@@ -347,16 +348,17 @@ exec " prefix "/sbin/collectd -C " config-dir "/collectd.conf")
                          options))]
     (apply-map service-action service options)))
 
-(defn collectd
-  "Returns a server-spec that installs and configures collectd"
-  [settings & {:keys [instance-id] :as opts}]
-  (server-spec
+(defn server-spec
+  "Returns a server-spec that installs and configures collectd."
+  [settings & {:keys [instance-id] :as options}]
+  (api/server-spec
    :phases
-   {:settings (collectd-settings (merge settings opts))
+   {:settings (plan-fn
+                (pallet.crate.collectd/settings (merge settings options)))
     :install (plan-fn
-              (collectd-user opts)
-              (install-collectd :instance-id instance-id))
-    :configure (plan-fn (collectd-conf opts))}))
+              (user options)
+              (install options))
+    :configure (plan-fn (configure options))}))
 
 ;;; # Configuration generating functions
 

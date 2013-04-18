@@ -2,10 +2,13 @@
 /lib
 /classes
 /checkouts
+/logs
+/doc-src/INTRO.md
+/doc-src/VERSIONS.md
 pom.xml
+pom.xml.asc
 *.jar
 *.class
 .lein-deps-sum
 .lein-failures
 .lein-plugins
-/logs
