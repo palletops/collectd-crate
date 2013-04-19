@@ -24,8 +24,8 @@ Install and configure collectd.
     <td>0.8.0-alpha.1</td>
     <td>clojars</td>
     <td>com.palletops</td>
-    <td><a href='https://github.com/pallet/collectd-crate/blob/collectd-0.8.0-alpha.1/ReleaseNotes.md'>Release Notes</a></td>
-    <td><a href='https://github.com/pallet/collectd-crate/blob/collectd-0.8.0-alpha.1/'>Source</a></td>
+    <td><a href='https://github.com/pallet/collectd-crate/blob/0.8.0-alpha.1/ReleaseNotes.md'>Release Notes</a></td>
+    <td><a href='https://github.com/pallet/collectd-crate/blob/0.8.0-alpha.1/'>Source</a></td>
   </tr>
 </tbody>
 </table>
