@@ -12,7 +12,7 @@
   (is (= '[[PIDFile "/pid"]
            [Plugin syslog [[LogLevel info]]]
            [Plugin cpu []]]
-         (collectd/collectd-config
+         (collectd/config
           [PIDFile "/pid"]
           (Plugin syslog
                   [[LogLevel info]])
@@ -62,11 +62,11 @@
          (collectd/format-config
           (collectd/add-load-plugin
            (concat
-            (collectd/collectd-config
+            (collectd/config
              [PIDFile "/pid"]
              [Plugin "syslog" [[LogLevel info]]]
              [Plugin "cpu" []])
-            (collectd/collectd-config
+            (collectd/config
              [Plugin "memory" []])))))))
 
 (deftest plugin-config-test
@@ -82,10 +82,10 @@
              [:Value [[:Type "gauge"] [:Attribute "CollectionTime"]]]]]
            [[:Connection
              [[:Host "host"] [:ServiceURL "http://somewhere"]]]]]]
-         (collectd/collectd-plugin-config
+         (collectd/plugin-config
           :generic-jmx
           {:mbeans (collectd/jmx-mbeans "pfx" [:gc])
-           :connections [(collectd/collectd-plugin-config
+           :connections [(collectd/plugin-config
                           :generic-jmx-connection
                           {:url "http://somewhere" :host "host"})]}))))
 

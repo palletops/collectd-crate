@@ -95,7 +95,7 @@
         settings (settings-map (:version settings) settings)]
     (assoc-settings :collectd settings {:instance-id instance-id})))
 
-(defplan collectd-add-config
+(defplan add-config
   "Add configuration for collectd. The given `config` is concatenated onto the
    collectd configuration. This can be used to allow other crates to contribute
    to the collectd configuration."
@@ -103,7 +103,7 @@
   (update-settings :collectd {:instance-id instance-id}
                    update-in [:config] concat config))
 
-(defplan collectd-add-plugin-config
+(defplan add-plugin-config
   "Add configuration for a collectd `plugin`. The `plugin` has to be a valid
    dispatch value for `plugin-config`.  The given `config` is concatenated onto
    the collectd plugin configuration. This can be used to allow other crates to
@@ -113,7 +113,7 @@
                    update-in [:plugins plugin] concat config))
 
 ;;; # Install
-(defmulti collectd-feature
+(defmulti feature
   "Provide compile time information for enabling collectd features.
    Each feature should return a map with :packages and :configure keys.
    :packages should list the required system packages, and :configure
@@ -130,7 +130,7 @@
    "ldconfig for libjvm"
    ("ldconfig")))
 
-(defmethod collectd-feature :java
+(defmethod feature :java
   [_]
   {:configure "--with-java=yes"
    :configure-env (array-map
@@ -145,10 +145,10 @@
   (let [{:keys [owner group src-dir prefix url features pkgs] :as settings}
         (get-settings facility {:instance-id instance-id})
         pkgs (concat pkgs
-                     (mapcat (comp :packages collectd-feature) features))
+                     (mapcat (comp :packages feature) features))
         config (join " "
-                     (map (comp :configure collectd-feature) features))]
-    (doseq [f (filter identity (map (comp :install collectd-feature) features))]
+                     (map (comp :configure feature) features))]
+    (doseq [f (filter identity (map (comp :install feature) features))]
       (f settings))
     (packages
      :centos (concat pkgs ["gcc" "make"])
@@ -162,7 +162,7 @@
        "Build collectd"
        (~(join " " (map
                     (fn [[k v]] (str (name k) "=\"" v \"))
-                    (mapcat (comp :configure-env collectd-feature) features)))
+                    (mapcat (comp :configure-env feature) features)))
         "./configure" "--prefix" ~prefix ~config)
        ("make all")))
     (with-action-options {:script-dir src-dir}
@@ -194,7 +194,7 @@
 ;;; scalars.  Blocks are represented as sequences containing a final sequence
 ;;; value.
 
-(defmacro collectd-config
+(defmacro config
   "Returns a collectd configuration literal. Note that values are not escaped
    here, so this can only be used for literal content."
   [& args]
@@ -285,7 +285,7 @@
    []
    plugins))
 
-(defplan collectd-config-from-settings
+(defplan config-from-settings
   "Calculate the contents of the collectd conf file from the settings"
   [{:keys [instance-id] :as options}]
   (let [{:keys [config plugins] :as settings} (get-settings :collectd options)]
@@ -294,15 +294,15 @@
 (defplan configure
   "Write the collectd conf file"
   [{:keys [instance-id] :as options}]
-  (let [config (collectd-config-from-settings options)]
+  (let [config (config-from-settings options)]
     (config-file
      "collectd.conf" {:content (format-config config) :literal true}
      options)))
 
-(defmulti collectd-service-script-content
+(defmulti service-script-content
   (fn [{:keys [service-impl] :as settings}] (or service-impl :upstart)))
 
-(defmethod collectd-service-script-content :upstart
+(defmethod service-script-content :upstart
   [{:keys [config-dir prefix] :or {prefix "/usr"} :as settings}]
   {:content (str
              "start on runlevel [2345]
@@ -328,7 +328,7 @@ exec " prefix "/sbin/collectd -C " config-dir "/collectd.conf")
     (apply-map
      service-script service
      (merge {:service-impl (or service-impl :upstart)}
-            (collectd-service-script-content settings)
+            (service-script-content settings)
             options))))
 
 (defplan service
@@ -363,33 +363,33 @@ exec " prefix "/sbin/collectd -C " config-dir "/collectd.conf")
 ;;; # Configuration generating functions
 
 ;;; ## Plugin configuration
-(defmulti collectd-plugin-config (fn [plugin options] plugin))
+(defmulti plugin-config (fn [plugin options] plugin))
 
-(defmethod collectd-plugin-config :logfile
+(defmethod plugin-config :logfile
   [_ {:keys [log-level log-dir] :or {log-level 'info}}]
   [:Plugin :logfile
    [[:LogLevel log-level]
     [:File (str log-dir "/collectd.log")]]])
 
-(defmethod collectd-plugin-config :write_graphite
+(defmethod plugin-config :write_graphite
   [_ {:keys [host port prefix] :or {port 2003 prefix "collectd."}}]
   (assert host "Must specify a host for write_graphite configuration")
   [:Plugin :write_graphite
    [[:Carbon [[:Host host] [:Port port] [:Prefix prefix]]]]])
 
-(defmethod collectd-plugin-config :java
+(defmethod plugin-config :java
   [_ {:keys [jvm-args plugins]}]
   `[:Plugin :java
    ~@(map #(vector :JVMArg %) jvm-args)
    ~@plugins])
 
-(defmethod collectd-plugin-config :generic-jmx
+(defmethod plugin-config :generic-jmx
   [_ {:keys [mbeans connections]}]
   `[:Plugin "org.collectd.java.GenericJMX"
     [~@mbeans
      ~@connections]])
 
-(defmethod collectd-plugin-config :generic-jmx-connection
+(defmethod plugin-config :generic-jmx-connection
   [_ {:keys [url host prefix mbeans]}]
   `[[:Connection
      [~@(when host [[:Host host]])
