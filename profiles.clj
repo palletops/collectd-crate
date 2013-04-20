@@ -11,10 +11,7 @@
              "--phases" "install,configure,test"
              "--selector" "live-test"]
             "live-test-down" ["pallet" "down" "--selector" "live-test"]
-            "live-test" ["do" "live-test-up," "live-test-down"]}
-  :test-selectors {:default (complement :live-test)
-                   :live-test :live-test
-                   :all (constantly true)}}
+            "live-test" ["do" "live-test-up," "live-test-down"]}}
  :doc {:dependencies [[com.palletops/pallet-codox "0.1.0"]]
        :plugins [[codox/codox.leiningen "0.6.4"]
                  [lein-marginalia "0.7.1"]]
@@ -25,7 +22,7 @@
        :aliases {"marg" ["marg" "-d" "doc/0.8/annotated"]
                  "codox" ["doc"]
                  "doc" ["do" "codox," "marg"]}}
- :no-checkouts {:checkout-shares ^:replace []} ; disable checkouts
+ :no-checkouts {:checkout-deps-shares ^:replace []} ; disable checkouts
  :release
  {:plugins [[lein-set-version "0.3.0"]]
   :set-version
