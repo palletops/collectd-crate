@@ -1,30 +1,30 @@
-;;; Copyright 2012 Hugo Duncan.
+;;; Copyright 2012, 2013 Hugo Duncan.
 ;;; All rights reserved.
 
 (ns pallet.crate.collectd
   "A pallet crate to install and configure collectd"
-  (:use
-   [pallet.monad.state-monad :only [m-map m-when]]
-   [clojure.string :only [join split]]
-   [clojure.tools.logging :only [debugf]]
-   [pallet.action :only [with-action-options]]
+  (:require
+   [clojure.string :refer [join split]]
+   [clojure.tools.logging :refer [debugf]]
+   [pallet.action :refer [with-action-options]]
    [pallet.actions
-    :only [directory exec-checked-script exec-script packages
+    :refer [directory exec-checked-script exec-script packages
            remote-directory remote-file service symbolic-link user group
            assoc-settings update-settings service-script]
     :rename {user user-action group group-action
              assoc-settings assoc-settings-action
-             service service-action}]
-   [pallet.api :only [plan-fn server-spec]]
+             service service-action
+             service-script service-script-action}]
+   [pallet.api :refer [plan-fn] :as api]
    [pallet.crate
-    :only [def-plan-fn assoc-settings defmethod-plan get-settings
+    :refer [defplan assoc-settings defmethod-plan get-settings
            get-node-settings group-name nodes-with-role target-id]]
-   [pallet.crate-install :only [install]]
-   [pallet.script.lib :only [pid-root log-root config-root user-home]]
-   [pallet.stevedore :only [script]]
-   [pallet.utils :only [apply-map]]
+   [pallet.crate-install :as crate-install]
+   [pallet.script.lib :refer [pid-root log-root config-root user-home]]
+   [pallet.stevedore :refer [script]]
+   [pallet.utils :refer [apply-map]]
    [pallet.version-dispatch
-    :only [defmulti-version-plan defmethod-version-plan]]))
+    :refer [defmulti-version-plan defmethod-version-plan]]))
 
 
 (def ^{:doc "Flag for recognising changes to configuration"}
@@ -54,50 +54,48 @@
 (defmulti-version-plan settings-map [version settings])
 
 (defmethod-version-plan
-  settings-map {:os :linux}
-  [os os-version version settings]
-  (m-result
-   (cond
-    (= ::source (:install-strategy settings))
-    (if (:remote-directory settings)
-      settings
-      (assoc settings
-        :remote-directory {:url (source-url settings)}))
+    settings-map {:os :linux}
+    [os os-version version settings]
+  (cond
+   (= ::source (:install-strategy settings))
+   (if (:remote-directory settings)
+     settings
+     (assoc settings
+       :remote-directory {:url (source-url settings)}))
 
-    (= :collectd5-ppa (:install-strategy settings))
-    (-> settings
-        (update-in
-         [:packages]
-         #(or % ["collectd"]))
-        (update-in
-         [:package-source :aptitude]
-         #(or % {:url "ppa:joey-imbasciano/collectd5"}))
-        (update-in
-         [:package-source :name]
-         #(or % "joey-imbasciano-collectd5"))
-        (assoc :config-dir "/etc")
-        (assoc :install-strategy :package-source))
+   (= :collectd5-ppa (:install-strategy settings))
+   (-> settings
+       (update-in
+        [:packages]
+        #(or % ["collectd"]))
+       (update-in
+        [:package-source :aptitude]
+        #(or % {:url "ppa:joey-imbasciano/collectd5"}))
+       (update-in
+        [:package-source :name]
+        #(or % "joey-imbasciano-collectd5"))
+       (assoc :config-dir "/etc")
+       (assoc :install-strategy :package-source))
 
-    (:install-strategy settings) settings
-    (:remote-directory settings) (assoc settings :install-strategy ::source)
+   (:install-strategy settings) settings
+   (:remote-directory settings) (assoc settings :install-strategy ::source)
 
-    :else (let [url (source-url settings)]
-            (assoc settings
-              :install-strategy :packages
-              :packages ["collectd"])))))
+   :else (let [url (source-url settings)]
+           (assoc settings
+             :install-strategy :packages
+             :packages ["collectd"]))))
 
-(def-plan-fn collectd-settings
+(defplan settings
   "Settings for collectd"
   [{:keys [user owner group dist-url version config install-strategy
            instance-id]
     :as settings}]
-  [settings (m-result
-             (update-in (merge (default-settings) (dissoc settings :config))
-                        [:config] concat (:config settings)))
-   settings (settings-map (:version settings) settings)]
-  (assoc-settings :collectd settings {:instance-id instance-id}))
+  (let [settings (update-in (merge (default-settings) (dissoc settings :config))
+                            [:config] concat (:config settings))
+        settings (settings-map (:version settings) settings)]
+    (assoc-settings :collectd settings {:instance-id instance-id})))
 
-(def-plan-fn collectd-add-config
+(defplan add-config
   "Add configuration for collectd. The given `config` is concatenated onto the
    collectd configuration. This can be used to allow other crates to contribute
    to the collectd configuration."
@@ -105,7 +103,7 @@
   (update-settings :collectd {:instance-id instance-id}
                    update-in [:config] concat config))
 
-(def-plan-fn collectd-add-plugin-config
+(defplan add-plugin-config
   "Add configuration for a collectd `plugin`. The `plugin` has to be a valid
    dispatch value for `plugin-config`.  The given `config` is concatenated onto
    the collectd plugin configuration. This can be used to allow other crates to
@@ -115,7 +113,7 @@
                    update-in [:plugins plugin] concat config))
 
 ;;; # Install
-(defmulti collectd-feature
+(defmulti feature
   "Provide compile time information for enabling collectd features.
    Each feature should return a map with :packages and :configure keys.
    :packages should list the required system packages, and :configure
@@ -123,7 +121,7 @@
    This is a multimethod so that it can be extended externally."
   (fn [feature] feature))
 
-(def-plan-fn link-libjvm-so
+(defplan link-libjvm-so
   [{:keys [prefix] :as settings}]
   (symbolic-link
    (script (str @JAVA_HOME "/jre/lib/amd64/server/libjvm.so"))
@@ -132,7 +130,7 @@
    "ldconfig for libjvm"
    ("ldconfig")))
 
-(defmethod collectd-feature :java
+(defmethod feature :java
   [_]
   {:configure "--with-java=yes"
    :configure-env (array-map
@@ -142,53 +140,52 @@
                    )       ; to prevent rpath in resulting java.so
    :install link-libjvm-so})
 
-(defmethod-plan install ::source
+(defmethod-plan crate-install/install ::source
   [facility instance-id]
-  [{:keys [owner group src-dir prefix url features pkgs] :as settings}
-   (get-settings facility {:instance-id instance-id})
-   pkgs (m-result
-         (concat pkgs
-                 (mapcat (comp :packages collectd-feature) features)))
-   config (m-result
-           (join " "
-                 (map (comp :configure collectd-feature) features)))]
-  (m-map
-   #(% settings)
-   (filter identity (map (comp :install collectd-feature) features)))
-  (packages
-   :centos (concat pkgs ["gcc" "make"])
-   :apt (concat pkgs ["build-essential" "libsensors-dev" "libsnmp-dev"])
-   :aptitude (concat pkgs ["build-essential"]))
-  (apply pallet.actions/remote-directory src-dir
-         (apply concat (merge {:owner owner :group group}
-                              (:remote-directory settings))))
-  (with-action-options {:script-dir src-dir :sudo-user owner}
-    (exec-checked-script
-     "Build collectd"
-     (~(join " " (map
-                  (fn [[k v]] (str (name k) "=\"" v \"))
-                  (mapcat (comp :configure-env collectd-feature) features)))
-      "./configure" "--prefix" ~prefix ~config)
-     ("make all")))
-  (with-action-options {:script-dir src-dir}
-    (exec-checked-script
-     "Install collectd"
-     ("make install"))))
+  (let [{:keys [owner group src-dir prefix url features pkgs] :as settings}
+        (get-settings facility {:instance-id instance-id})
+        pkgs (concat pkgs
+                     (mapcat (comp :packages feature) features))
+        config (join " "
+                     (map (comp :configure feature) features))]
+    (doseq [f (filter identity (map (comp :install feature) features))]
+      (f settings))
+    (packages
+     :centos (concat pkgs ["gcc" "make"])
+     :apt (concat pkgs ["build-essential" "libsensors-dev" "libsnmp-dev"])
+     :aptitude (concat pkgs ["build-essential"]))
+    (apply pallet.actions/remote-directory src-dir
+           (apply concat (merge {:owner owner :group group}
+                                (:remote-directory settings))))
+    (with-action-options {:script-dir src-dir :sudo-user owner}
+      (exec-checked-script
+       "Build collectd"
+       (~(join " " (map
+                    (fn [[k v]] (str (name k) "=\"" v \"))
+                    (mapcat (comp :configure-env feature) features)))
+        "./configure" "--prefix" ~prefix ~config)
+       ("make all")))
+    (with-action-options {:script-dir src-dir}
+      (exec-checked-script
+       "Install collectd"
+       ("make install")))))
 
-(def-plan-fn install-collectd
+(defplan install
   "Install collectd."
-  [& {:keys [instance-id]}]
-  [settings (get-settings :collectd {:instance-id instance-id})]
-  (install :collectd instance-id))
+  [{:keys [instance-id]}]
+  (let [settings (get-settings :collectd {:instance-id instance-id})]
+    (crate-install/install :collectd instance-id)))
 
 ;;; # User
-(def-plan-fn collectd-user
+(defplan user
   "Create the collectd user"
   [{:keys [instance-id] :as options}]
-  [{:keys [user owner group]} (get-settings :collectd options)]
-  (group-action group :system true)
-  (m-when (not= owner user) (user-action owner :group group :system true))
-  (user-action user :group group :system true :create-home true :shell :bash))
+  (let [{:keys [user owner group]} (get-settings :collectd options)]
+    (group-action group :system true)
+    (when (not= owner user)
+      (user-action owner :group group :system true))
+    (user-action
+     user :group group :system true :create-home true :shell :bash)))
 
 ;;; # Configuration
 
@@ -197,7 +194,7 @@
 ;;; scalars.  Blocks are represented as sequences containing a final sequence
 ;;; value.
 
-(defmacro collectd-config
+(defmacro config
   "Returns a collectd configuration literal. Note that values are not escaped
    here, so this can only be used for literal content."
   [& args]
@@ -268,15 +265,15 @@
       other))))
 
 
-(def-plan-fn config-file
+(defplan config-file
   "Helper to write config files"
   [filename file-source options]
-  [{:keys [owner group config-dir]} (get-settings :collectd options)]
-  (apply
-   remote-file (str config-dir "/" filename)
-   :flag-on-changed collectd-config-changed-flag
-   :owner owner :group group
-   (apply concat file-source)))
+  (let [{:keys [owner group config-dir]} (get-settings :collectd options)]
+    (apply
+     remote-file (str config-dir "/" filename)
+     :flag-on-changed collectd-config-changed-flag
+     :owner owner :group group
+     (apply concat file-source))))
 
 (defn plugin-config-from-settings
   "Calculates a plugin's config from the :plugins in the :collectd settings."
@@ -288,25 +285,24 @@
    []
    plugins))
 
-(def-plan-fn collectd-config-from-settings
+(defplan config-from-settings
   "Calculate the contents of the collectd conf file from the settings"
   [{:keys [instance-id] :as options}]
-  [{:keys [config plugins] :as settings} (get-settings :collectd options)]
-  (m-result (add-load-plugin
-             (concat config (plugin-config-from-settings plugins)))))
+  (let [{:keys [config plugins] :as settings} (get-settings :collectd options)]
+    (add-load-plugin (concat config (plugin-config-from-settings plugins)))))
 
-(def-plan-fn collectd-conf
+(defplan configure
   "Write the collectd conf file"
   [{:keys [instance-id] :as options}]
-  [config (collectd-config-from-settings options)]
-  (config-file
-   "collectd.conf" {:content (format-config config) :literal true}
-   options))
+  (let [config (config-from-settings options)]
+    (config-file
+     "collectd.conf" {:content (format-config config) :literal true}
+     options)))
 
-(defmulti collectd-service-script-content
+(defmulti service-script-content
   (fn [{:keys [service-impl] :as settings}] (or service-impl :upstart)))
 
-(defmethod collectd-service-script-content :upstart
+(defmethod service-script-content :upstart
   [{:keys [config-dir prefix] :or {prefix "/usr"} :as settings}]
   {:content (str
              "start on runlevel [2345]
@@ -318,7 +314,7 @@ pre-start exec " prefix "/sbin/collectd -t -C " config-dir "/collectd.conf
 exec " prefix "/sbin/collectd -C " config-dir "/collectd.conf")
    :literal true})
 
-(def-plan-fn collectd-service-script
+(defplan service-script
   "Install the collectd service script.
 
    Specify `:if-config-changed true` to make actions conditional on a change in
@@ -327,16 +323,15 @@ exec " prefix "/sbin/collectd -C " config-dir "/collectd.conf")
    Other options are as for `pallet.action.service/service`. The service
    name is looked up in the request parameters."
   [{:keys [action if-config-changed if-flag instance-id] :as options}]
-  [{:keys [service service-impl] :as settings}
-   (get-settings :collectd {:instance-id instance-id})]
-  (apply-map
-   service-script service
-   (merge {:service-impl (or service-impl :upstart)}
-          (collectd-service-script-content settings)
-          options)))
+  (let [{:keys [service service-impl] :as settings}
+        (get-settings :collectd {:instance-id instance-id})]
+    (apply-map
+     service-script service
+     (merge {:service-impl (or service-impl :upstart)}
+            (service-script-content settings)
+            options))))
 
-
-(def-plan-fn collectd-service
+(defplan service
   "Control the collectd service.
 
    Specify `:if-config-changed true` to make actions conditional on a change in
@@ -345,56 +340,56 @@ exec " prefix "/sbin/collectd -C " config-dir "/collectd.conf")
    Other options are as for `pallet.action.service/service`. The service
    name is looked up in the request parameters."
   [{:keys [action if-config-changed if-flag instance-id] :as options}]
-  [{:keys [service service-impl] :or {service-impl :upstart}}
-   (get-settings :collectd {:instance-id instance-id})
-   options (m-result
-            (merge {:service-impl service-impl}
-                   (if if-config-changed
-                     (assoc options :if-flag collectd-config-changed-flag)
-                     options)))]
-  (apply-map service-action service options))
+  (let [{:keys [service service-impl] :or {service-impl :upstart}}
+        (get-settings :collectd {:instance-id instance-id})
+        options (merge {:service-impl service-impl}
+                       (if if-config-changed
+                         (assoc options :if-flag collectd-config-changed-flag)
+                         options))]
+    (apply-map service-action service options)))
 
-(defn collectd
-  "Returns a server-spec that installs and configures collectd"
-  [settings & {:keys [instance-id] :as opts}]
-  (server-spec
+(defn server-spec
+  "Returns a server-spec that installs and configures collectd."
+  [settings & {:keys [instance-id] :as options}]
+  (api/server-spec
    :phases
-   {:settings (collectd-settings (merge settings opts))
+   {:settings (plan-fn
+                (pallet.crate.collectd/settings (merge settings options)))
     :install (plan-fn
-              (collectd-user opts)
-              (install-collectd :instance-id instance-id))
-    :configure (plan-fn (collectd-conf opts))}))
+              (user options)
+              (install options))
+    :configure (plan-fn (configure options))}))
 
 ;;; # Configuration generating functions
 
 ;;; ## Plugin configuration
-(defmulti collectd-plugin-config (fn [plugin options] plugin))
+(defmulti plugin-config (fn [plugin options] plugin))
 
-(defmethod collectd-plugin-config :logfile
+(defmethod plugin-config :logfile
   [_ {:keys [log-level log-dir] :or {log-level 'info}}]
   [:Plugin :logfile
    [[:LogLevel log-level]
     [:File (str log-dir "/collectd.log")]]])
 
-(defmethod collectd-plugin-config :write_graphite
+(defmethod plugin-config :write_graphite
   [_ {:keys [host port prefix] :or {port 2003 prefix "collectd."}}]
   (assert host "Must specify a host for write_graphite configuration")
   [:Plugin :write_graphite
    [[:Carbon [[:Host host] [:Port port] [:Prefix prefix]]]]])
 
-(defmethod collectd-plugin-config :java
+(defmethod plugin-config :java
   [_ {:keys [jvm-args plugins]}]
   `[:Plugin :java
    ~@(map #(vector :JVMArg %) jvm-args)
    ~@plugins])
 
-(defmethod collectd-plugin-config :generic-jmx
+(defmethod plugin-config :generic-jmx
   [_ {:keys [mbeans connections]}]
   `[:Plugin "org.collectd.java.GenericJMX"
     [~@mbeans
      ~@connections]])
 
-(defmethod collectd-plugin-config :generic-jmx-connection
+(defmethod plugin-config :generic-jmx-connection
   [_ {:keys [url host prefix mbeans]}]
   `[[:Connection
      [~@(when host [[:Host host]])
