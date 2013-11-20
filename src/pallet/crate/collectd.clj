@@ -243,9 +243,11 @@
 (defn add-load-plugin
   "Looks for Plugin configuration blocks, and adds LoadPlugin blocks for them."
   [config]
-  (let [[globals other] (partition-by
-                         (comp boolean config-block)
-                         (concat [[]] config))]
+  (let [g (group-by
+           (comp boolean config-block)
+           (concat [[]] config))
+        globals (get g false)
+        other (get g true)]
     (debugf
      "add-load-plugin %s %s %s"
      (vec config) (doall globals) (doall other))
