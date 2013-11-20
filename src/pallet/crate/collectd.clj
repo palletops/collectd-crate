@@ -28,7 +28,7 @@
 
 
 (def ^{:doc "Flag for recognising changes to configuration"}
-  collectd-config-changed-flag "collectd-config")
+  config-changed-flag "collectd-config")
 
 ;;; # Settings
 (defn default-settings []
@@ -93,6 +93,7 @@
   (let [settings (update-in (merge (default-settings) (dissoc settings :config))
                             [:config] concat (:config settings))
         settings (settings-map (:version settings) settings)]
+    (debugf "collectd settings %s" settings)
     (assoc-settings :collectd settings {:instance-id instance-id})))
 
 (defplan add-config
@@ -242,9 +243,11 @@
 (defn add-load-plugin
   "Looks for Plugin configuration blocks, and adds LoadPlugin blocks for them."
   [config]
-  (let [[globals other] (partition-by
-                         (comp boolean config-block)
-                         (concat [[]] config))]
+  (let [g (group-by
+           (comp boolean config-block)
+           (concat [[]] config))
+        globals (get g false)
+        other (get g true)]
     (debugf
      "add-load-plugin %s %s %s"
      (vec config) (doall globals) (doall other))
@@ -271,7 +274,7 @@
   (let [{:keys [owner group config-dir]} (get-settings :collectd options)]
     (apply
      remote-file (str config-dir "/" filename)
-     :flag-on-changed collectd-config-changed-flag
+     :flag-on-changed config-changed-flag
      :owner owner :group group
      (apply concat file-source))))
 
@@ -344,9 +347,19 @@ exec " prefix "/sbin/collectd -C " config-dir "/collectd.conf")
         (get-settings :collectd {:instance-id instance-id})
         options (merge {:service-impl service-impl}
                        (if if-config-changed
-                         (assoc options :if-flag collectd-config-changed-flag)
+                         (assoc options :if-flag config-changed-flag)
                          options))]
     (apply-map service-action service options)))
+
+(defplan ensure-service
+  "Ensure the service is running and has read the latest configuration."
+  [& {:keys [instance-id] :as options}]
+  (service {:instance-id instance-id
+            :if-stopped true
+            :action :start})
+  (service {:instance-id instance-id
+            :if-flag config-changed-flag
+            :action :reload}))
 
 (defn server-spec
   "Returns a server-spec that installs and configures collectd."

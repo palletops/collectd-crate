@@ -30,13 +30,14 @@ echo ""
 echo ""
 echo "Now edit project.clj, ReleaseNotes and README"
 
+$EDITOR resources/pallet_crate/collectd_crate/meta.edn
+lein crate-doc
 $EDITOR project.clj
 $EDITOR ReleaseNotes.md
-$EDITOR README.md
 
 echo -n "commiting project.clj, release notes and readme.  enter to continue:" \
 && read x \
-&& git add project.clj ReleaseNotes.md README.md \
+&& git add project.clj ReleaseNotes.md README.md resources/pallet_crate/collectd_crate/meta.edn \
 && git commit -m "Updated project.clj, release notes and readme for $version" \
 && echo -n "Peform release.  enter to continue:" && read x \
 && lein do clean, with-profile +no-checkouts test, with-profile +palletops deploy palletops \
