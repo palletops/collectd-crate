@@ -371,7 +371,8 @@ exec " prefix "/sbin/collectd -C " config-dir "/collectd.conf")
     :install (plan-fn
               (user options)
               (install options))
-    :configure (plan-fn (configure options))}))
+    :configure (plan-fn (configure options))}
+   :default-phases [:settings :install :configure]))
 
 ;;; # Configuration generating functions
 

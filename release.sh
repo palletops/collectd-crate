@@ -40,7 +40,7 @@ echo -n "commiting project.clj, release notes and readme.  enter to continue:" \
 && git add project.clj ReleaseNotes.md README.md resources/pallet_crate/collectd_crate/meta.edn \
 && git commit -m "Updated project.clj, release notes and readme for $version" \
 && echo -n "Peform release.  enter to continue:" && read x \
-&& lein do clean, with-profile +no-checkouts test, with-profile +palletops deploy palletops \
+&& lein do clean, with-profile +no-checkouts test, with-profile +palletops deploy clojars \
 && git flow release finish $version \
 && echo "Now push to github. Don't forget the tags!" \
 && lein with-profile release set-version ${next_version} \

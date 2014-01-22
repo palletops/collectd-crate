@@ -1,5 +1,9 @@
 # Release Notes
 
+## 0.8.0-alpha.3
+
+- Add :default-phases to server-spec
+
 ## 0.8.0-alpha.2
 
 - Fix add-load-plugin
