@@ -1,5 +1,6 @@
 ## License
 
-Copyright © 2012, 2013 Hugo Duncan
+Licensed under [EPL](http://www.eclipse.org/legal/epl-v10.1.1.html)
 
-All Rights Reserved.
+Copyright © 2012-2014 Hugo Duncan, Antoni Batchelli
+
