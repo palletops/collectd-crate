@@ -1,4 +1,11 @@
-# Release Notes
+## 0.8.0-alpha.4
+
+- Prepare project for release automation w/lein-pallet-release.
+
+- Update licenses and remove release boilerplate in prep for
+  lein-pallet-release
+
+- Change license to EPL (From All Rights Reserved).
 
 ## 0.8.0-alpha.3
 
