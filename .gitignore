@@ -7,6 +7,8 @@
 /doc-src/VERSIONS.md
 pom.xml
 pom.xml.asc
+src/cfg/
+test/pallet/
 *.jar
 *.class
 .lein-deps-sum
