@@ -3,11 +3,10 @@
 
 (ns pallet.crate.collectd
   "A pallet crate to install and configure collectd"
-  (:require
-   [clojure.string :refer [join split]]
-   [clojure.tools.logging :refer [debugf]]
-   [pallet.action :refer [with-action-options]]
-   [pallet.actions
+  (:require [clojure.string :refer [join split]]
+            [clojure.tools.logging :refer [debugf]]
+            [pallet.action :refer [with-action-options]]
+            [pallet.actions
     :refer [directory exec-checked-script exec-script packages
            remote-directory remote-file service symbolic-link user group
            assoc-settings update-settings service-script]
@@ -15,20 +14,24 @@
              assoc-settings assoc-settings-action
              service service-action
              service-script service-script-action}]
-   [pallet.api :refer [plan-fn] :as api]
-   [pallet.crate
+            [pallet.api :refer [plan-fn] :as api]
+            [pallet.crate-install :as crate-install]
+            [pallet.crate
     :refer [defplan assoc-settings defmethod-plan get-settings
-           get-node-settings group-name nodes-with-role target-id]]
-   [pallet.crate-install :as crate-install]
-   [pallet.script.lib :refer [pid-root log-root config-root user-home]]
-   [pallet.stevedore :refer [script]]
-   [pallet.utils :refer [apply-map]]
-   [pallet.version-dispatch
-    :refer [defmulti-version-plan defmethod-version-plan]]))
+            get-node-settings group-name nodes-with-role target-id]]
+            [pallet.crate.service
+             :refer [supervisor-config supervisor-config-map] :as service]
+            [pallet.script.lib :refer [config-root file log-root pid-root user-home]]
+            [pallet.stevedore :refer [fragment script]]
+            [pallet.utils :refer [apply-map]]
+            [pallet.version-dispatch
+             :refer [defmulti-version-plan defmethod-version-plan]]))
 
 
 (def ^{:doc "Flag for recognising changes to configuration"}
   config-changed-flag "collectd-config")
+
+(def facility ::collectd)
 
 ;;; # Settings
 (defn default-settings []
@@ -42,12 +45,20 @@
    :config-dir "/etc"
    :plugin-dir "/var/lib/collectd"
    :log-dir "/var/log"
+   :bin "/usr/sbin/collectd"
+   :service-name "collectd"
+   :supervisor :nohup
    :config [;; [:PIDFile (script (str (~pid-root) "/collectd.pid"))]
             ]
    :service "collectd"})
 
 (defn source-url [{:keys [version dist-url]}]
   (format "%s/collectd-%s.tar.gz" dist-url version))
+
+(defn run-command
+  "Return a script command to run riemann."
+  [{:keys [bin home user config-dir] :as settings}]
+  (fragment ((file ~bin) -f -C (file ~config-dir "collectd.conf"))))
 
 ;;; At the moment we just have a single implementation of settings,
 ;;; but this is open-coded.
@@ -92,16 +103,20 @@
     :as settings}]
   (let [settings (update-in (merge (default-settings) (dissoc settings :config))
                             [:config] concat (:config settings))
-        settings (settings-map (:version settings) settings)]
+        settings (settings-map (:version settings) settings)
+        settings (update-in settings [:run-command]
+                            #(or % (run-command settings)))]
     (debugf "collectd settings %s" settings)
-    (assoc-settings :collectd settings {:instance-id instance-id})))
+    (assoc-settings facility settings {:instance-id instance-id})
+    (supervisor-config
+     facility settings (select-keys settings [:instance-id]))))
 
 (defplan add-config
   "Add configuration for collectd. The given `config` is concatenated onto the
    collectd configuration. This can be used to allow other crates to contribute
    to the collectd configuration."
   [config & {:keys [instance-id] :as options}]
-  (update-settings :collectd {:instance-id instance-id}
+  (update-settings facility {:instance-id instance-id}
                    update-in [:config] concat config))
 
 (defplan add-plugin-config
@@ -110,7 +125,7 @@
    the collectd plugin configuration. This can be used to allow other crates to
    contribute to a collectd plugin configuration."
   [plugin config & {:keys [instance-id] :as options}]
-  (update-settings :collectd {:instance-id instance-id}
+  (update-settings facility {:instance-id instance-id}
                    update-in [:plugins plugin] concat config))
 
 ;;; # Install
@@ -174,14 +189,14 @@
 (defplan install
   "Install collectd."
   [{:keys [instance-id]}]
-  (let [settings (get-settings :collectd {:instance-id instance-id})]
-    (crate-install/install :collectd instance-id)))
+  (let [settings (get-settings facility {:instance-id instance-id})]
+    (crate-install/install facility instance-id)))
 
 ;;; # User
 (defplan user
   "Create the collectd user"
   [{:keys [instance-id] :as options}]
-  (let [{:keys [user owner group]} (get-settings :collectd options)]
+  (let [{:keys [user owner group]} (get-settings facility options)]
     (group-action group :system true)
     (when (not= owner user)
       (user-action owner :group group :system true))
@@ -271,7 +286,7 @@
 (defplan config-file
   "Helper to write config files"
   [filename file-source options]
-  (let [{:keys [owner group config-dir]} (get-settings :collectd options)]
+  (let [{:keys [owner group config-dir]} (get-settings facility options)]
     (apply
      remote-file (str config-dir "/" filename)
      :flag-on-changed config-changed-flag
@@ -279,7 +294,7 @@
      (apply concat file-source))))
 
 (defn plugin-config-from-settings
-  "Calculates a plugin's config from the :plugins in the :collectd settings."
+  "Calculates a plugin's config from the :plugins in the facility settings."
   [plugins]
   (debugf "plugin-config-from-settings %s" (vec plugins))
   (reduce
@@ -291,7 +306,7 @@
 (defplan config-from-settings
   "Calculate the contents of the collectd conf file from the settings"
   [{:keys [instance-id] :as options}]
-  (let [{:keys [config plugins] :as settings} (get-settings :collectd options)]
+  (let [{:keys [config plugins] :as settings} (get-settings facility options)]
     (add-load-plugin (concat config (plugin-config-from-settings plugins)))))
 
 (defplan configure
@@ -301,6 +316,24 @@
     (config-file
      "collectd.conf" {:content (format-config config) :literal true}
      options)))
+
+
+(defmethod supervisor-config-map [facility :runit]
+  [_ {:keys [run-command service-name user] :as settings} options]
+  {:service-name service-name
+   :run-file {:content (str "#!/bin/sh\nexec " run-command)}})
+
+(defmethod supervisor-config-map [facility :upstart]
+  [_ {:keys [run-command service-name user] :as settings} options]
+  {:service-name service-name
+   :exec run-command
+   :setuid user})
+
+(defmethod supervisor-config-map [facility :nohup]
+  [_ {:keys [run-command service-name user] :as settings} options]
+  {:service-name service-name
+   :run-file {:content run-command}
+   :user user})
 
 (defmulti service-script-content
   (fn [{:keys [service-impl] :as settings}] (or service-impl :upstart)))
@@ -327,7 +360,7 @@ exec " prefix "/sbin/collectd -C " config-dir "/collectd.conf")
    name is looked up in the request parameters."
   [{:keys [action if-config-changed if-flag instance-id] :as options}]
   (let [{:keys [service service-impl] :as settings}
-        (get-settings :collectd {:instance-id instance-id})]
+        (get-settings facility {:instance-id instance-id})]
     (apply-map
      service-script service
      (merge {:service-impl (or service-impl :upstart)}
@@ -335,21 +368,17 @@ exec " prefix "/sbin/collectd -C " config-dir "/collectd.conf")
             options))))
 
 (defplan service
-  "Control the collectd service.
-
-   Specify `:if-config-changed true` to make actions conditional on a change in
-   configuration.
-
-   Other options are as for `pallet.action.service/service`. The service
-   name is looked up in the request parameters."
-  [{:keys [action if-config-changed if-flag instance-id] :as options}]
-  (let [{:keys [service service-impl] :or {service-impl :upstart}}
-        (get-settings :collectd {:instance-id instance-id})
-        options (merge {:service-impl service-impl}
-                       (if if-config-changed
-                         (assoc options :if-flag config-changed-flag)
-                         options))]
-    (apply-map service-action service options)))
+  "Run the collectd service."
+  [{:keys [action if-flag if-stopped if-config-changed instance-id]
+    :or {action :manage}
+    :as options}]
+  (let [options (-> options
+                    (dissoc :instance-id)
+                    (cond-> if-config-changed
+                            (assoc :if-flag config-changed-flag)))
+        {:keys [supervision-options] :as settings}
+        (get-settings facility {:instance-id instance-id})]
+    (service/service settings (merge supervision-options options))))
 
 (defplan ensure-service
   "Ensure the service is running and has read the latest configuration."
@@ -367,11 +396,13 @@ exec " prefix "/sbin/collectd -C " config-dir "/collectd.conf")
   (api/server-spec
    :phases
    {:settings (plan-fn
-                (pallet.crate.collectd/settings (merge settings options)))
+               (pallet.crate.collectd/settings (merge settings options)))
     :install (plan-fn
               (user options)
               (install options))
-    :configure (plan-fn (configure options))}
+    :configure (plan-fn
+                (configure options)
+                (service (merge options {:action :enable})))}
    :default-phases [:settings :install :configure]))
 
 ;;; # Configuration generating functions
