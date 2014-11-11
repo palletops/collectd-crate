@@ -1,3 +1,11 @@
+## 0.8.0-alpha.5
+
+- Scope clojure and pallet as :provided dependencies
+
+- Remove require of taoensso.timbre
+
+- Use the service abstraction
+
 ## 0.8.0-alpha.4
 
 - Prepare project for release automation w/lein-pallet-release.

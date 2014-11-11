@@ -9,7 +9,7 @@ Install and configure collectd.
 ### Dependency Information
 
 ```clj
-:dependencies [[com.palletops/collectd-crate "0.8.0-alpha.4"]]
+:dependencies [[com.palletops/collectd-crate "0.8.0-alpha.5"]]
 ```
 
 ### Releases
@@ -21,11 +21,11 @@ Install and configure collectd.
 <tbody>
   <tr>
     <th>0.8.0-RC.4</th>
-    <td>0.8.0-alpha.4</td>
+    <td>0.8.0-alpha.5</td>
     <td>clojars</td>
     <td>com.palletops</td>
-    <td><a href='https://github.com/pallet/collectd-crate/blob/0.8.0-alpha.4/ReleaseNotes.md'>Release Notes</a></td>
-    <td><a href='https://github.com/pallet/collectd-crate/blob/0.8.0-alpha.4/'>Source</a></td>
+    <td><a href='https://github.com/pallet/collectd-crate/blob/0.8.0-alpha.5/ReleaseNotes.md'>Release Notes</a></td>
+    <td><a href='https://github.com/pallet/collectd-crate/blob/0.8.0-alpha.5/'>Source</a></td>
   </tr>
 </tbody>
 </table>
