@@ -25,8 +25,7 @@
             [pallet.stevedore :refer [fragment script]]
             [pallet.utils :refer [apply-map]]
             [pallet.version-dispatch
-             :refer [defmulti-version-plan defmethod-version-plan]]
-            [taoensso.timbre :as log]))
+             :refer [defmulti-version-plan defmethod-version-plan]]))
 
 
 (def ^{:doc "Flag for recognising changes to configuration"}
