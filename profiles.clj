@@ -9,7 +9,7 @@
  :dev {:dependencies [[com.palletops/pallet "0.8.0-RC.9" :classifier "tests"]
                       [com.palletops/crates "0.1.1"]
                       [ch.qos.logback/logback-classic "1.0.9"]],
-       :plugins [[lein-pallet-release "0.1.6"]
+       :plugins [[lein-pallet-release "RELEASE"]
                  [com.palletops/pallet-lein "0.8.0-alpha.1"]
                  [lein-resource "0.3.2"]],
        :pallet-release
